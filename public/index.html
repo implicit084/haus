@@ -384,7 +384,7 @@
             <input id="energy-date" type="date" />
           </div>
 
-          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); gap: 10px;">
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px;">
             <div class="upload-box">
               <strong style="font-size: 0.85rem;">Gaszähler</strong>
               <label for="gas-reading" style="font-size: 0.78rem;">Zählerstand (m³)</label>
@@ -433,15 +433,48 @@
           <div style="margin-top: 10px;">
             <button id="energy-save-btn" type="button">Werte speichern</button>
           </div>
+
+          <div class="upload-box" style="margin-top: 16px; gap: 12px;">
+            <div style="display:flex; flex-direction:column; gap:8px;">
+              <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+                <strong style="font-size:0.85rem;">Verlauf</strong>
+                <div style="display:inline-flex; background:rgba(15,23,42,0.9); border-radius:999px; padding:2px; border:1px solid rgba(31,41,55,0.9);">
+                  <button id="chart-mode-reading" type="button" style="border-radius:999px; padding:3px 10px; font-size:0.72rem; border:none; background:rgba(34,197,94,0.16); color:var(--accent); cursor:pointer;">Zählerstand</button>
+                  <button id="chart-mode-consumption" type="button" style="border-radius:999px; padding:3px 10px; font-size:0.72rem; border:none; background:transparent; color:var(--muted); cursor:pointer;">Verbrauch</button>
+                </div>
+              </div>
+              <div style="display:flex; gap:14px; flex-wrap:wrap; font-size:0.78rem;">
+                <label style="display:flex;align-items:center;gap:5px;cursor:pointer;">
+                  <input type="checkbox" id="check-gas" checked />
+                  <span style="color:#f97316;">● Gas</span>
+                </label>
+                <label style="display:flex;align-items:center;gap:5px;cursor:pointer;">
+                  <input type="checkbox" id="check-water" checked />
+                  <span style="color:#3b82f6;">● Wasser</span>
+                </label>
+                <label style="display:flex;align-items:center;gap:5px;cursor:pointer;">
+                  <input type="checkbox" id="check-power1" checked />
+                  <span style="color:#eab308;">● Strom 88</span>
+                </label>
+                <label style="display:flex;align-items:center;gap:5px;cursor:pointer;">
+                  <input type="checkbox" id="check-power2" checked />
+                  <span style="color:#a855f7;">● Strom 89</span>
+                </label>
+              </div>
+            </div>
+            <div style="position:relative; height:320px;">
+              <canvas id="energy-chart"></canvas>
+            </div>
+          </div>
         </section>
       </main>
 
       <footer>
         <div>Alle Daten werden lokal auf deinem Raspberry Pi verarbeitet.</div>
-        <div>Später erweiterbar für Gas/Strom/Wasser-Verbrauch.</div>
       </footer>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <script>
       const calendarBodyEl = document.getElementById('calendar-body');
       const calendarTitleEl = document.getElementById('calendar-title');
@@ -705,6 +738,7 @@
         setActiveTab('energy');
         loadEnergyConfig();
         loadLatestReadings();
+        loadEnergyHistory();
       });
 
       prevMonthBtn.addEventListener('click', () => {
@@ -771,6 +805,127 @@
           applyReading('power2', power2ReadingInput, power2ReadingDateEl);
         } catch (err) {
           console.error('Fehler beim Laden der letzten Zählerstände:', err);
+        }
+      }
+
+      const METER_CONFIG = [
+        { key: 'gas',    label: 'Gas',      color: '#f97316', checkId: 'check-gas' },
+        { key: 'water',  label: 'Wasser',   color: '#3b82f6', checkId: 'check-water' },
+        { key: 'power1', label: 'Strom 88', color: '#eab308', checkId: 'check-power1' },
+        { key: 'power2', label: 'Strom 89', color: '#a855f7', checkId: 'check-power2' },
+      ];
+
+      let energyChart = null;
+      let historyDataCache = null;
+      let chartMode = 'reading'; // 'reading' | 'consumption'
+
+      function fmtDateLabel(iso) {
+        const [y, m] = iso.split('-');
+        return m + '/' + y.slice(2);
+      }
+
+      function toConsumption(points) {
+        return points.map((p, i) => {
+          if (i === 0) return { date: p.date, reading: null };
+          const diff = p.reading - points[i - 1].reading;
+          return { date: p.date, reading: diff >= 0 ? diff : null }; // null bei Zählerwechsel
+        });
+      }
+
+      function renderEnergyChart(data) {
+        if (data) historyDataCache = data;
+        if (!historyDataCache) return;
+        const d = historyDataCache;
+
+        const dateSet = new Set();
+        for (const points of Object.values(d)) {
+          for (const p of points) dateSet.add(p.date);
+        }
+        const allDates = [...dateSet].sort();
+        const labels = allDates.map(fmtDateLabel);
+
+        const datasets = METER_CONFIG.map(m => {
+          let points = d[m.key] || [];
+          if (chartMode === 'consumption') points = toConsumption(points);
+          const byDate = Object.fromEntries(points.map(p => [p.date, p.reading]));
+          return {
+            label: m.label,
+            data: allDates.map(date => byDate[date] ?? null),
+            borderColor: m.color,
+            backgroundColor: m.color + '22',
+            tension: 0.3,
+            spanGaps: false,
+            pointRadius: 0,
+            pointHoverRadius: 4,
+            borderWidth: 2,
+            hidden: !document.getElementById(m.checkId).checked,
+          };
+        });
+
+        const ctx = document.getElementById('energy-chart').getContext('2d');
+        if (energyChart) energyChart.destroy();
+        energyChart = new Chart(ctx, {
+          type: 'line',
+          data: { labels, datasets },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode: 'index', intersect: false },
+            plugins: {
+              legend: { display: false },
+              tooltip: {
+                backgroundColor: 'rgba(15,23,42,0.95)',
+                borderColor: 'rgba(148,163,184,0.2)',
+                borderWidth: 1,
+                titleColor: '#9ca3af',
+                bodyColor: '#e5e7eb',
+              },
+            },
+            scales: {
+              x: {
+                ticks: { color: '#9ca3af', maxTicksLimit: 12, maxRotation: 45 },
+                grid: { color: 'rgba(31,41,55,0.8)' },
+              },
+              y: {
+                ticks: { color: '#9ca3af' },
+                grid: { color: 'rgba(31,41,55,0.8)' },
+              },
+            },
+          },
+        });
+
+        METER_CONFIG.forEach((m, i) => {
+          document.getElementById(m.checkId).addEventListener('change', () => {
+            if (energyChart) {
+              energyChart.data.datasets[i].hidden = !document.getElementById(m.checkId).checked;
+              energyChart.update();
+            }
+          });
+        });
+      }
+
+      function setChartMode(mode) {
+        chartMode = mode;
+        const btnReading = document.getElementById('chart-mode-reading');
+        const btnConsumption = document.getElementById('chart-mode-consumption');
+        btnReading.style.background = mode === 'reading' ? 'rgba(34,197,94,0.16)' : 'transparent';
+        btnReading.style.color = mode === 'reading' ? 'var(--accent)' : 'var(--muted)';
+        btnConsumption.style.background = mode === 'consumption' ? 'rgba(34,197,94,0.16)' : 'transparent';
+        btnConsumption.style.color = mode === 'consumption' ? 'var(--accent)' : 'var(--muted)';
+        renderEnergyChart(null);
+      }
+
+      document.getElementById('chart-mode-reading').addEventListener('click', () => setChartMode('reading'));
+      document.getElementById('chart-mode-consumption').addEventListener('click', () => setChartMode('consumption'));
+
+      async function loadEnergyHistory() {
+        try {
+          const res = await fetch('/energy/readings/history');
+          if (!res.ok) return;
+          const data = await res.json();
+          if (Object.keys(data).length > 0) renderEnergyChart(data);
+        } catch (err) {
+          console.error('Fehler beim Laden der Verlaufsdaten:', err);
         }
       }
 

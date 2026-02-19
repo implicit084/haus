@@ -282,6 +282,49 @@ async function buildServer() {
     return result;
   });
 
+  // Alle Zählerstände aus InfluxDB für Verlaufsdiagramm
+  app.get('/energy/readings/history', async (_, reply) => {
+    if (!influxQueryApi || !influxBucket) {
+      return {};
+    }
+
+    const fluxQuery = `
+      from(bucket: "${influxBucket}")
+        |> range(start: -10y)
+        |> filter(fn: (r) => r._measurement == "energy_meter" and r._field == "reading")
+        |> group(columns: ["meter"])
+        |> sort(columns: ["_time"])
+    `;
+
+    const result: Record<string, { date: string; reading: number }[]> = {};
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        influxQueryApi!.queryRows(fluxQuery, {
+          next(row, tableMeta) {
+            const o = tableMeta.toObject(row);
+            const meter = o['meter'] as string;
+            if (meter && o['_value'] != null && o['_time']) {
+              if (!result[meter]) result[meter] = [];
+              result[meter].push({
+                date: new Date(String(o['_time'])).toISOString().slice(0, 10),
+                reading: Number(o['_value']),
+              });
+            }
+          },
+          error: reject,
+          complete: resolve,
+        });
+      });
+    } catch (err) {
+      app.log.error({ err }, 'Fehler beim Abfragen der InfluxDB (history)');
+      reply.code(500);
+      return { error: 'InfluxDB-Abfrage fehlgeschlagen' };
+    }
+
+    return result;
+  });
+
   // Energie-Werte schreiben (Gas/Wasser/Strom-Zählerstände + Preise)
   app.post(
     '/energy/readings',
