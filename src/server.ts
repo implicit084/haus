@@ -85,6 +85,23 @@ async function sendTelegramMessage(text: string): Promise<void> {
   }
 }
 
+async function checkAndNotifyMeterReading(logger: { info: (msg: string) => void; error: (obj: object, msg: string) => void }): Promise<void> {
+  if (!telegramBotToken || !telegramChatId) return;
+
+  const today = new Date();
+  if (today.getDate() !== 1) return;
+
+  const monthName = today.toLocaleDateString('de-DE', { month: 'long', year: 'numeric' });
+  const text = `🔢 <b>Zählerstände erfassen</b>\nHeute ist der 1. des Monats – bitte die Zählerstände für <b>${monthName}</b> eintragen.`;
+
+  try {
+    await sendTelegramMessage(text);
+    logger.info(`Telegram-Zählerstand-Erinnerung gesendet für ${today.toISOString().slice(0, 10)}`);
+  } catch (err) {
+    logger.error({ err }, 'Fehler beim Senden der Zählerstand-Erinnerung');
+  }
+}
+
 async function checkAndNotifyTomorrowPickups(logger: { info: (msg: string) => void; error: (obj: object, msg: string) => void }): Promise<void> {
   if (!telegramBotToken || !telegramChatId) return;
 
@@ -421,8 +438,15 @@ async function start() {
       );
     });
 
+    // Täglich um 08:00 Uhr: am 1. des Monats Zählerstand-Erinnerung senden
+    scheduleDailyAt(8, 0, () => {
+      checkAndNotifyMeterReading(app.log).catch(err =>
+        app.log.error({ err }, 'Fehler im Zählerstand-Erinnerungscheck'),
+      );
+    });
+
     if (telegramBotToken && telegramChatId) {
-      app.log.info('Telegram-Benachrichtigungen aktiviert (täglich 18:00 Uhr)');
+      app.log.info('Telegram-Benachrichtigungen aktiviert (Müll 18:00, Zähler 08:00 am 1. des Monats)');
     }
   } catch (err) {
     app.log.error(err);
