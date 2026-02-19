@@ -1,0 +1,13 @@
+node_modules
+dist
+npm-debug.log*
+pnpm-lock.yaml
+yarn.lock
+
+.DS_Store
+.env
+.env.*
+
+# Lokale Daten (ICS, spätere Konfigurationen, temporäre Dateien)
+data/
+
