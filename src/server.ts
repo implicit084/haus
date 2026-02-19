@@ -22,10 +22,25 @@ type EnergyConfigEntry = {
 
 type EnergyConfig = Record<EnergyMeterType, EnergyConfigEntry>;
 
-const wastePickups: WastePickup[] = [];
-
 const dataDir = path.join(__dirname, '..', 'data');
 fs.mkdirSync(dataDir, { recursive: true });
+
+const wastePickupsPath = path.join(dataDir, 'waste-pickups.json');
+
+function loadWastePickups(): WastePickup[] {
+  try {
+    const raw = fs.readFileSync(wastePickupsPath, 'utf-8');
+    return JSON.parse(raw);
+  } catch {
+    return [];
+  }
+}
+
+function saveWastePickups(pickups: WastePickup[]) {
+  fs.writeFileSync(wastePickupsPath, JSON.stringify(pickups, null, 2), 'utf-8');
+}
+
+const wastePickups: WastePickup[] = loadWastePickups();
 
 const energyConfigPath = path.join(dataDir, 'energy-config.json');
 
@@ -214,6 +229,7 @@ async function buildServer() {
       }
     }
 
+    saveWastePickups(wastePickups);
     return { ok: true, count: wastePickups.length };
   });
 
