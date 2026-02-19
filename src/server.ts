@@ -4,6 +4,7 @@ import fastifyStatic from '@fastify/static';
 import path from 'path';
 import fs from 'fs';
 import ical from 'ical';
+import { InfluxDB, Point, WriteApi } from '@influxdata/influxdb-client';
 
 const PORT = Number(process.env.PORT) || 3000;
 
@@ -12,10 +13,133 @@ type WastePickup = {
   summary: string;
 };
 
+type EnergyMeterType = 'gas' | 'water' | 'power1' | 'power2';
+
+type EnergyConfigEntry = {
+  basePrice: number; // Grundpreis (z.B. €/Monat)
+  unitPrice: number; // Arbeitspreis (z.B. €/kWh oder €/m³)
+};
+
+type EnergyConfig = Record<EnergyMeterType, EnergyConfigEntry>;
+
 const wastePickups: WastePickup[] = [];
 
 const dataDir = path.join(__dirname, '..', 'data');
 fs.mkdirSync(dataDir, { recursive: true });
+
+const energyConfigPath = path.join(dataDir, 'energy-config.json');
+
+function loadEnergyConfig(): EnergyConfig {
+  try {
+    const raw = fs.readFileSync(energyConfigPath, 'utf-8');
+    const parsed = JSON.parse(raw);
+    return {
+      gas: parsed.gas ?? { basePrice: 0, unitPrice: 0 },
+      water: parsed.water ?? { basePrice: 0, unitPrice: 0 },
+      power1: parsed.power1 ?? { basePrice: 0, unitPrice: 0 },
+      power2: parsed.power2 ?? { basePrice: 0, unitPrice: 0 },
+    };
+  } catch {
+    return {
+      gas: { basePrice: 0, unitPrice: 0 },
+      water: { basePrice: 0, unitPrice: 0 },
+      power1: { basePrice: 0, unitPrice: 0 },
+      power2: { basePrice: 0, unitPrice: 0 },
+    };
+  }
+}
+
+function saveEnergyConfig(config: EnergyConfig) {
+  fs.writeFileSync(energyConfigPath, JSON.stringify(config, null, 2), 'utf-8');
+}
+
+// Telegram-Konfiguration (optional)
+const telegramBotToken = process.env.TELEGRAM_BOT_TOKEN;
+const telegramChatId = process.env.TELEGRAM_CHAT_ID;
+
+async function sendTelegramMessage(text: string): Promise<void> {
+  if (!telegramBotToken || !telegramChatId) return;
+  const url = `https://api.telegram.org/bot${telegramBotToken}/sendMessage`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: telegramChatId, text, parse_mode: 'HTML' }),
+  });
+  if (!res.ok) {
+    throw new Error(`Telegram API Fehler: ${res.status}`);
+  }
+}
+
+async function checkAndNotifyTomorrowPickups(logger: { info: (msg: string) => void; error: (obj: object, msg: string) => void }): Promise<void> {
+  if (!telegramBotToken || !telegramChatId) return;
+
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const tomorrowStr = tomorrow.toISOString().slice(0, 10);
+
+  const pickups = wastePickups.filter(p => p.date === tomorrowStr);
+  if (pickups.length === 0) return;
+
+  const items = pickups.map(p => `• ${p.summary}`).join('\n');
+  const text = `🗑️ <b>Morgen wird abgeholt:</b>\n${items}`;
+
+  try {
+    await sendTelegramMessage(text);
+    logger.info(`Telegram-Benachrichtigung gesendet für ${tomorrowStr}`);
+  } catch (err) {
+    logger.error({ err }, 'Fehler beim Senden der Telegram-Nachricht');
+  }
+}
+
+function scheduleDailyAt(hour: number, minute: number, task: () => void): void {
+  function msUntilNext(): number {
+    const now = new Date();
+    const next = new Date();
+    next.setHours(hour, minute, 0, 0);
+    if (next <= now) next.setDate(next.getDate() + 1);
+    return next.getTime() - now.getTime();
+  }
+  function run() {
+    task();
+    setTimeout(run, msUntilNext());
+  }
+  setTimeout(run, msUntilNext());
+}
+
+// InfluxDB-Konfiguration (optional)
+const influxUrl = process.env.INFLUX_URL;
+const influxToken = process.env.INFLUX_TOKEN;
+const influxOrg = process.env.INFLUX_ORG;
+const influxBucket = process.env.INFLUX_BUCKET;
+
+let influxWriteApi: WriteApi | null = null;
+
+if (influxUrl && influxToken && influxOrg && influxBucket) {
+  const influx = new InfluxDB({ url: influxUrl, token: influxToken });
+  influxWriteApi = influx.getWriteApi(influxOrg, influxBucket, 'ms');
+}
+
+async function writeEnergyReadings(
+  readings: { meter: EnergyMeterType; date: string; value: number; basePrice: number; unitPrice: number }[],
+) {
+  if (!influxWriteApi) {
+    // Influx ist nicht konfiguriert – still akzeptieren, aber nichts schreiben
+    return;
+  }
+
+  for (const r of readings) {
+    const ts = new Date(r.date);
+    const point = new Point('energy_meter')
+      .tag('meter', r.meter)
+      .floatField('reading', r.value)
+      .floatField('base_price', r.basePrice)
+      .floatField('unit_price', r.unitPrice)
+      .timestamp(ts);
+    influxWriteApi.writePoint(point);
+  }
+
+  await influxWriteApi.flush();
+}
 
 async function buildServer() {
   const app = Fastify({
@@ -35,6 +159,21 @@ async function buildServer() {
   // Healthcheck
   app.get('/health', async () => {
     return { status: 'ok' };
+  });
+
+  // Telegram-Test
+  app.get('/telegram/test', async (_, reply) => {
+    if (!telegramBotToken || !telegramChatId) {
+      reply.code(503);
+      return { ok: false, message: 'TELEGRAM_BOT_TOKEN oder TELEGRAM_CHAT_ID nicht konfiguriert' };
+    }
+    try {
+      await sendTelegramMessage('✅ <b>Haus-App Test</b>\nTelegram-Benachrichtigungen funktionieren!');
+      return { ok: true, message: 'Testnachricht gesendet' };
+    } catch (err: any) {
+      reply.code(500);
+      return { ok: false, message: err.message };
+    }
   });
 
   // Liste aller importierten Müll-Abholtermine
@@ -78,6 +217,90 @@ async function buildServer() {
     return { ok: true, count: wastePickups.length };
   });
 
+  // Energiekonfiguration lesen
+  app.get('/energy/config', async () => {
+    return loadEnergyConfig();
+  });
+
+  // Energie-Werte schreiben (Gas/Wasser/Strom-Zählerstände + Preise)
+  app.post(
+    '/energy/readings',
+    async (
+      request,
+      reply,
+    ): Promise<{ ok: boolean; message?: string }> => {
+      const body = request.body as any;
+      if (!body || typeof body !== 'object') {
+        reply.code(400);
+        return { ok: false, message: 'Ungültiger Request-Body' };
+      }
+
+      const dateStr = typeof body.date === 'string' ? body.date : null;
+      if (!dateStr) {
+        reply.code(400);
+        return { ok: false, message: 'Datum fehlt' };
+      }
+
+      const readings = Array.isArray(body.readings) ? body.readings : [];
+      const validMeters: EnergyMeterType[] = ['gas', 'water', 'power1', 'power2'];
+
+      const parsedReadings: {
+        meter: EnergyMeterType;
+        date: string;
+        value: number;
+        basePrice: number;
+        unitPrice: number;
+      }[] = [];
+
+      let config = loadEnergyConfig();
+
+      for (const r of readings) {
+        if (!r || typeof r !== 'object') continue;
+        const meter = r.meter as EnergyMeterType;
+        if (!validMeters.includes(meter)) continue;
+
+        const value = Number(r.value);
+        const basePrice = Number(r.basePrice);
+        const unitPrice = Number(r.unitPrice);
+        if (!Number.isFinite(value)) continue;
+
+        if (!config[meter]) {
+          config[meter] = { basePrice: 0, unitPrice: 0 };
+        }
+        // Neue Preise werden als Standard gespeichert
+        if (Number.isFinite(basePrice)) {
+          config[meter].basePrice = basePrice;
+        }
+        if (Number.isFinite(unitPrice)) {
+          config[meter].unitPrice = unitPrice;
+        }
+
+        parsedReadings.push({
+          meter,
+          date: dateStr,
+          value,
+          basePrice: Number.isFinite(basePrice) ? basePrice : config[meter].basePrice,
+          unitPrice: Number.isFinite(unitPrice) ? unitPrice : config[meter].unitPrice,
+        });
+      }
+
+      saveEnergyConfig(config);
+
+      if (parsedReadings.length === 0) {
+        return { ok: false, message: 'Keine gültigen Messwerte übergeben' };
+      }
+
+      try {
+        await writeEnergyReadings(parsedReadings);
+      } catch (err) {
+        app.log.error({ err }, 'Fehler beim Schreiben nach InfluxDB');
+        // Wir melden trotzdem ok=true, damit du die Werte nicht verlierst
+      }
+
+      return { ok: true };
+    },
+  );
+
   return app;
 }
 
@@ -87,6 +310,17 @@ async function start() {
   try {
     await app.listen({ port: PORT, host: '0.0.0.0' });
     console.log(`Server läuft auf Port ${PORT}`);
+
+    // Täglich um 18:00 Uhr prüfen ob morgen ein Müllabholtermin ansteht
+    scheduleDailyAt(18, 0, () => {
+      checkAndNotifyTomorrowPickups(app.log).catch(err =>
+        app.log.error({ err }, 'Fehler im Telegram-Benachrichtigungscheck'),
+      );
+    });
+
+    if (telegramBotToken && telegramChatId) {
+      app.log.info('Telegram-Benachrichtigungen aktiviert (täglich 18:00 Uhr)');
+    }
   } catch (err) {
     app.log.error(err);
     process.exit(1);

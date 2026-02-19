@@ -313,6 +313,7 @@
           <div class="tabs">
             <button class="tab-button active" type="button" id="tab-btn-calendar">Kalender</button>
             <button class="tab-button" type="button" id="tab-btn-import">Import</button>
+            <button class="tab-button" type="button" id="tab-btn-energy">Energie</button>
           </div>
           <button class="secondary" type="button" id="reload-btn">Termine neu laden</button>
         </div>
@@ -367,6 +368,66 @@
             <div class="upload-meta" id="upload-meta">Noch keine Datei ausgewählt.</div>
           </div>
         </section>
+
+        <section id="tab-energy" style="display: none;">
+          <h2>Energiezähler</h2>
+          <p class="hint">
+            Trage hier die aktuellen Zählerstände sowie Grundpreis und Arbeitspreis für Gas, Wasser und Strom ein.
+            Die Preise werden als Standard für zukünftige Einträge gespeichert.
+          </p>
+          <div class="status" id="status-energy"></div>
+
+          <div style="margin-bottom: 10px; font-size: 0.78rem;">
+            <label for="energy-date">Datum:&nbsp;</label>
+            <input id="energy-date" type="date" />
+          </div>
+
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); gap: 10px;">
+            <div class="upload-box">
+              <strong style="font-size: 0.85rem;">Gaszähler</strong>
+              <label for="gas-reading" style="font-size: 0.78rem;">Zählerstand (m³)</label>
+              <input id="gas-reading" type="number" inputmode="decimal" step="0.01" />
+              <label for="gas-base" style="font-size: 0.78rem;">Grundpreis (€/Monat)</label>
+              <input id="gas-base" type="number" inputmode="decimal" step="0.01" />
+              <label for="gas-unit" style="font-size: 0.78rem;">Preis (€/kWh)</label>
+              <input id="gas-unit" type="number" inputmode="decimal" step="0.0001" />
+            </div>
+
+            <div class="upload-box">
+              <strong style="font-size: 0.85rem;">Wasserzähler</strong>
+              <label for="water-reading" style="font-size: 0.78rem;">Zählerstand (m³)</label>
+              <input id="water-reading" type="number" inputmode="decimal" step="0.01" />
+              <label for="water-base" style="font-size: 0.78rem;">Grundpreis (€/Monat)</label>
+              <input id="water-base" type="number" inputmode="decimal" step="0.01" />
+              <label for="water-unit" style="font-size: 0.78rem;">Preis (€/m³)</label>
+              <input id="water-unit" type="number" inputmode="decimal" step="0.0001" />
+            </div>
+
+            <div class="upload-box">
+              <strong style="font-size: 0.85rem;">Stromzähler 88</strong>
+              <label for="power1-reading" style="font-size: 0.78rem;">Zählerstand (kWh)</label>
+              <input id="power1-reading" type="number" inputmode="decimal" step="0.01" />
+              <label for="power1-base" style="font-size: 0.78rem;">Grundpreis (€/Monat)</label>
+              <input id="power1-base" type="number" inputmode="decimal" step="0.01" />
+              <label for="power1-unit" style="font-size: 0.78rem;">Preis (€/kWh)</label>
+              <input id="power1-unit" type="number" inputmode="decimal" step="0.0001" />
+            </div>
+
+            <div class="upload-box">
+              <strong style="font-size: 0.85rem;">Stromzähler 89</strong>
+              <label for="power2-reading" style="font-size: 0.78rem;">Zählerstand (kWh)</label>
+              <input id="power2-reading" type="number" inputmode="decimal" step="0.01" />
+              <label for="power2-base" style="font-size: 0.78rem;">Grundpreis (€/Monat)</label>
+              <input id="power2-base" type="number" inputmode="decimal" step="0.01" />
+              <label for="power2-unit" style="font-size: 0.78rem;">Preis (€/kWh)</label>
+              <input id="power2-unit" type="number" inputmode="decimal" step="0.0001" />
+            </div>
+          </div>
+
+          <div style="margin-top: 10px;">
+            <button id="energy-save-btn" type="button">Werte speichern</button>
+          </div>
+        </section>
       </main>
 
       <footer>
@@ -391,8 +452,26 @@
       const todayMonthBtn = document.getElementById('today-month');
       const tabBtnCalendar = document.getElementById('tab-btn-calendar');
       const tabBtnImport = document.getElementById('tab-btn-import');
+      const tabBtnEnergy = document.getElementById('tab-btn-energy');
       const tabCalendar = document.getElementById('tab-calendar');
       const tabImport = document.getElementById('tab-import');
+      const tabEnergy = document.getElementById('tab-energy');
+      const statusEnergyEl = document.getElementById('status-energy');
+
+      const energyDateInput = document.getElementById('energy-date');
+      const gasReadingInput = document.getElementById('gas-reading');
+      const gasBaseInput = document.getElementById('gas-base');
+      const gasUnitInput = document.getElementById('gas-unit');
+      const waterReadingInput = document.getElementById('water-reading');
+      const waterBaseInput = document.getElementById('water-base');
+      const waterUnitInput = document.getElementById('water-unit');
+      const power1ReadingInput = document.getElementById('power1-reading');
+      const power1BaseInput = document.getElementById('power1-base');
+      const power1UnitInput = document.getElementById('power1-unit');
+      const power2ReadingInput = document.getElementById('power2-reading');
+      const power2BaseInput = document.getElementById('power2-base');
+      const power2UnitInput = document.getElementById('power2-unit');
+      const energySaveBtn = document.getElementById('energy-save-btn');
 
       let currentMonth = new Date();
       currentMonth.setDate(1);
@@ -600,21 +679,18 @@
       reloadBtn.addEventListener('click', loadPickups);
 
       function setActiveTab(tab) {
-        if (tab === 'calendar') {
-          tabCalendar.style.display = 'block';
-          tabImport.style.display = 'none';
-          tabBtnCalendar.classList.add('active');
-          tabBtnImport.classList.remove('active');
-        } else {
-          tabCalendar.style.display = 'none';
-          tabImport.style.display = 'block';
-          tabBtnCalendar.classList.remove('active');
-          tabBtnImport.classList.add('active');
-        }
+        tabCalendar.style.display = tab === 'calendar' ? 'block' : 'none';
+        tabImport.style.display = tab === 'import' ? 'block' : 'none';
+        tabEnergy.style.display = tab === 'energy' ? 'block' : 'none';
+
+        tabBtnCalendar.classList.toggle('active', tab === 'calendar');
+        tabBtnImport.classList.toggle('active', tab === 'import');
+        tabBtnEnergy.classList.toggle('active', tab === 'energy');
       }
 
       tabBtnCalendar.addEventListener('click', () => setActiveTab('calendar'));
       tabBtnImport.addEventListener('click', () => setActiveTab('import'));
+      tabBtnEnergy.addEventListener('click', () => setActiveTab('energy'));
 
       prevMonthBtn.addEventListener('click', () => {
         currentMonth.setMonth(currentMonth.getMonth() - 1);
@@ -632,9 +708,92 @@
         renderCalendar(currentItems);
       });
 
+      async function loadEnergyConfig() {
+        try {
+          const res = await fetch('/energy/config');
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          const cfg = await res.json();
+
+          if (cfg.gas) {
+            gasBaseInput.value = cfg.gas.basePrice ?? '';
+            gasUnitInput.value = cfg.gas.unitPrice ?? '';
+          }
+          if (cfg.water) {
+            waterBaseInput.value = cfg.water.basePrice ?? '';
+            waterUnitInput.value = cfg.water.unitPrice ?? '';
+          }
+          if (cfg.power1) {
+            power1BaseInput.value = cfg.power1.basePrice ?? '';
+            power1UnitInput.value = cfg.power1.unitPrice ?? '';
+          }
+          if (cfg.power2) {
+            power2BaseInput.value = cfg.power2.basePrice ?? '';
+            power2UnitInput.value = cfg.power2.unitPrice ?? '';
+          }
+        } catch (err) {
+          console.error(err);
+        }
+      }
+
+      energySaveBtn.addEventListener('click', async () => {
+        const dateVal = energyDateInput.value || new Date().toISOString().slice(0, 10);
+
+        const readings = [];
+
+        function pushIfAny(meter, readingInput, baseInput, unitInput) {
+          const reading = parseFloat(readingInput.value.replace(',', '.'));
+          const basePrice = parseFloat(baseInput.value.replace(',', '.'));
+          const unitPrice = parseFloat(unitInput.value.replace(',', '.'));
+
+          if (!Number.isNaN(reading)) {
+            readings.push({
+              meter,
+              value: reading,
+              basePrice: Number.isNaN(basePrice) ? null : basePrice,
+              unitPrice: Number.isNaN(unitPrice) ? null : unitPrice,
+            });
+          }
+        }
+
+        pushIfAny('gas', gasReadingInput, gasBaseInput, gasUnitInput);
+        pushIfAny('water', waterReadingInput, waterBaseInput, waterUnitInput);
+        pushIfAny('power1', power1ReadingInput, power1BaseInput, power1UnitInput);
+        pushIfAny('power2', power2ReadingInput, power2BaseInput, power2UnitInput);
+
+        if (readings.length === 0) {
+          setStatus(statusEnergyEl, 'Bitte mindestens einen Zählerstand eintragen.', 'error');
+          return;
+        }
+
+        setStatus(statusEnergyEl, 'Speichere Werte …', 'ok');
+        energySaveBtn.disabled = true;
+
+        try {
+          const res = await fetch('/energy/readings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ date: dateVal, readings }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || data.ok === false) {
+            throw new Error(data.message || 'Fehler beim Speichern');
+          }
+          setStatus(statusEnergyEl, 'Werte gespeichert.', 'ok');
+          await loadEnergyConfig(); // aktualisierte Defaults laden
+        } catch (err) {
+          console.error(err);
+          setStatus(statusEnergyEl, 'Fehler beim Speichern der Werte.', 'error');
+        } finally {
+          energySaveBtn.disabled = false;
+        }
+      });
+
       // Initiales Laden
       updateLastImportFromStorage();
       loadPickups();
+      // Datum im Energie-Tab auf heute setzen
+      energyDateInput.value = new Date().toISOString().slice(0, 10);
+      loadEnergyConfig();
     </script>
   </body>
   </html>
