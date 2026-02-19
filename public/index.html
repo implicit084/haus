@@ -315,7 +315,6 @@
             <button class="tab-button" type="button" id="tab-btn-import">Import</button>
             <button class="tab-button" type="button" id="tab-btn-energy">Energie</button>
           </div>
-          <button class="secondary" type="button" id="reload-btn">Termine neu laden</button>
         </div>
       </header>
 
@@ -367,6 +366,9 @@
             <button id="upload-btn" type="button">Hochladen &amp; importieren</button>
             <div class="upload-meta" id="upload-meta">Noch keine Datei ausgewählt.</div>
           </div>
+          <div style="margin-top: 10px;">
+            <button class="secondary" type="button" id="reload-btn">Termine neu laden</button>
+          </div>
         </section>
 
         <section id="tab-energy" style="display: none;">
@@ -387,6 +389,7 @@
               <strong style="font-size: 0.85rem;">Gaszähler</strong>
               <label for="gas-reading" style="font-size: 0.78rem;">Zählerstand (m³)</label>
               <input id="gas-reading" type="number" inputmode="decimal" step="0.01" />
+              <small id="gas-reading-date" style="color: var(--muted); font-size: 0.7rem; display: none;"></small>
               <label for="gas-base" style="font-size: 0.78rem;">Grundpreis (€/Monat)</label>
               <input id="gas-base" type="number" inputmode="decimal" step="0.01" />
               <label for="gas-unit" style="font-size: 0.78rem;">Preis (€/kWh)</label>
@@ -397,6 +400,7 @@
               <strong style="font-size: 0.85rem;">Wasserzähler</strong>
               <label for="water-reading" style="font-size: 0.78rem;">Zählerstand (m³)</label>
               <input id="water-reading" type="number" inputmode="decimal" step="0.01" />
+              <small id="water-reading-date" style="color: var(--muted); font-size: 0.7rem; display: none;"></small>
               <label for="water-base" style="font-size: 0.78rem;">Grundpreis (€/Monat)</label>
               <input id="water-base" type="number" inputmode="decimal" step="0.01" />
               <label for="water-unit" style="font-size: 0.78rem;">Preis (€/m³)</label>
@@ -407,6 +411,7 @@
               <strong style="font-size: 0.85rem;">Stromzähler 88</strong>
               <label for="power1-reading" style="font-size: 0.78rem;">Zählerstand (kWh)</label>
               <input id="power1-reading" type="number" inputmode="decimal" step="0.01" />
+              <small id="power1-reading-date" style="color: var(--muted); font-size: 0.7rem; display: none;"></small>
               <label for="power1-base" style="font-size: 0.78rem;">Grundpreis (€/Monat)</label>
               <input id="power1-base" type="number" inputmode="decimal" step="0.01" />
               <label for="power1-unit" style="font-size: 0.78rem;">Preis (€/kWh)</label>
@@ -417,6 +422,7 @@
               <strong style="font-size: 0.85rem;">Stromzähler 89</strong>
               <label for="power2-reading" style="font-size: 0.78rem;">Zählerstand (kWh)</label>
               <input id="power2-reading" type="number" inputmode="decimal" step="0.01" />
+              <small id="power2-reading-date" style="color: var(--muted); font-size: 0.7rem; display: none;"></small>
               <label for="power2-base" style="font-size: 0.78rem;">Grundpreis (€/Monat)</label>
               <input id="power2-base" type="number" inputmode="decimal" step="0.01" />
               <label for="power2-unit" style="font-size: 0.78rem;">Preis (€/kWh)</label>
@@ -472,6 +478,11 @@
       const power2BaseInput = document.getElementById('power2-base');
       const power2UnitInput = document.getElementById('power2-unit');
       const energySaveBtn = document.getElementById('energy-save-btn');
+
+      const gasReadingDateEl = document.getElementById('gas-reading-date');
+      const waterReadingDateEl = document.getElementById('water-reading-date');
+      const power1ReadingDateEl = document.getElementById('power1-reading-date');
+      const power2ReadingDateEl = document.getElementById('power2-reading-date');
 
       let currentMonth = new Date();
       currentMonth.setDate(1);
@@ -690,7 +701,11 @@
 
       tabBtnCalendar.addEventListener('click', () => setActiveTab('calendar'));
       tabBtnImport.addEventListener('click', () => setActiveTab('import'));
-      tabBtnEnergy.addEventListener('click', () => setActiveTab('energy'));
+      tabBtnEnergy.addEventListener('click', () => {
+        setActiveTab('energy');
+        loadEnergyConfig();
+        loadLatestReadings();
+      });
 
       prevMonthBtn.addEventListener('click', () => {
         currentMonth.setMonth(currentMonth.getMonth() - 1);
@@ -732,6 +747,30 @@
           }
         } catch (err) {
           console.error(err);
+        }
+      }
+
+      async function loadLatestReadings() {
+        try {
+          const res = await fetch('/energy/readings/latest');
+          if (!res.ok) return;
+          const data = await res.json();
+
+          function applyReading(meter, inputEl, dateEl) {
+            if (data[meter] != null) {
+              inputEl.value = data[meter].reading;
+              const d = new Date(data[meter].date);
+              dateEl.textContent = 'Letzter Eintrag: ' + d.toLocaleDateString('de-DE');
+              dateEl.style.display = 'block';
+            }
+          }
+
+          applyReading('gas', gasReadingInput, gasReadingDateEl);
+          applyReading('water', waterReadingInput, waterReadingDateEl);
+          applyReading('power1', power1ReadingInput, power1ReadingDateEl);
+          applyReading('power2', power2ReadingInput, power2ReadingDateEl);
+        } catch (err) {
+          console.error('Fehler beim Laden der letzten Zählerstände:', err);
         }
       }
 
@@ -794,6 +833,7 @@
       // Datum im Energie-Tab auf heute setzen
       energyDateInput.value = new Date().toISOString().slice(0, 10);
       loadEnergyConfig();
+      loadLatestReadings();
     </script>
   </body>
   </html>

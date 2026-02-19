@@ -4,7 +4,7 @@ import fastifyStatic from '@fastify/static';
 import path from 'path';
 import fs from 'fs';
 import ical from 'ical';
-import { InfluxDB, Point, WriteApi } from '@influxdata/influxdb-client';
+import { InfluxDB, Point, WriteApi, QueryApi } from '@influxdata/influxdb-client';
 
 const PORT = Number(process.env.PORT) || 3000;
 
@@ -128,10 +128,12 @@ const influxOrg = process.env.INFLUX_ORG;
 const influxBucket = process.env.INFLUX_BUCKET;
 
 let influxWriteApi: WriteApi | null = null;
+let influxQueryApi: QueryApi | null = null;
 
 if (influxUrl && influxToken && influxOrg && influxBucket) {
   const influx = new InfluxDB({ url: influxUrl, token: influxToken });
   influxWriteApi = influx.getWriteApi(influxOrg, influxBucket, 'ms');
+  influxQueryApi = influx.getQueryApi(influxOrg);
 }
 
 async function writeEnergyReadings(
@@ -236,6 +238,48 @@ async function buildServer() {
   // Energiekonfiguration lesen
   app.get('/energy/config', async () => {
     return loadEnergyConfig();
+  });
+
+  // Letzten Zählerstand pro Meter aus InfluxDB abfragen
+  app.get('/energy/readings/latest', async (_, reply) => {
+    if (!influxQueryApi || !influxBucket) {
+      return {};
+    }
+
+    const fluxQuery = `
+      from(bucket: "${influxBucket}")
+        |> range(start: -10y)
+        |> filter(fn: (r) => r._measurement == "energy_meter" and r._field == "reading")
+        |> group(columns: ["meter"])
+        |> last()
+    `;
+
+    const result: Record<string, { reading: number; date: string }> = {};
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        influxQueryApi!.queryRows(fluxQuery, {
+          next(row, tableMeta) {
+            const o = tableMeta.toObject(row);
+            const meter = o['meter'] as string;
+            if (meter && o['_value'] != null && o['_time']) {
+              result[meter] = {
+                reading: Number(o['_value']),
+                date: new Date(String(o['_time'])).toISOString().slice(0, 10),
+              };
+            }
+          },
+          error: reject,
+          complete: resolve,
+        });
+      });
+    } catch (err) {
+      app.log.error({ err }, 'Fehler beim Abfragen der InfluxDB (latest readings)');
+      reply.code(500);
+      return { error: 'InfluxDB-Abfrage fehlgeschlagen' };
+    }
+
+    return result;
   });
 
   // Energie-Werte schreiben (Gas/Wasser/Strom-Zählerstände + Preise)
