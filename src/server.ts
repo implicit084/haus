@@ -72,20 +72,143 @@ function saveEnergyConfig(config: EnergyConfig) {
 const telegramBotToken = process.env.TELEGRAM_BOT_TOKEN;
 const telegramChatId = process.env.TELEGRAM_CHAT_ID;
 
-async function sendTelegramMessage(text: string): Promise<void> {
-  if (!telegramBotToken || !telegramChatId) return;
+async function sendTelegramMessageToChat(chatId: string | number, text: string): Promise<void> {
+  if (!telegramBotToken) return;
   const url = `https://api.telegram.org/bot${telegramBotToken}/sendMessage`;
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: telegramChatId, text, parse_mode: 'HTML' }),
+    body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML' }),
   });
   if (!res.ok) {
     throw new Error(`Telegram API Fehler: ${res.status}`);
   }
 }
 
-async function checkAndNotifyMeterReading(logger: { info: (msg: string) => void; error: (obj: object, msg: string) => void }): Promise<void> {
+async function sendTelegramMessage(text: string): Promise<void> {
+  if (!telegramChatId) return;
+  return sendTelegramMessageToChat(telegramChatId, text);
+}
+
+// Wetter-Konfiguration (Open-Meteo, kein API-Key nötig)
+const weatherLat = process.env.WEATHER_LAT ?? '52.4344';
+const weatherLon = process.env.WEATHER_LON ?? '13.2486';
+
+const WMO_CODES: Record<number, string> = {
+  0:  'Klarer Himmel ☀️',
+  1:  'Überwiegend klar 🌤',
+  2:  'Teilweise bewölkt ⛅',
+  3:  'Bedeckt ☁️',
+  45: 'Nebel 🌫',
+  48: 'Reifnebel 🌫',
+  51: 'Leichter Nieselregen 🌦',
+  53: 'Mäßiger Nieselregen 🌦',
+  55: 'Starker Nieselregen 🌧',
+  61: 'Leichter Regen 🌧',
+  63: 'Mäßiger Regen 🌧',
+  65: 'Starker Regen 🌧',
+  71: 'Leichter Schneefall ❄️',
+  73: 'Mäßiger Schneefall ❄️',
+  75: 'Starker Schneefall ❄️',
+  77: 'Schneekörner 🌨',
+  80: 'Leichte Regenschauer 🌦',
+  81: 'Mäßige Regenschauer 🌦',
+  82: 'Starke Regenschauer 🌧',
+  85: 'Leichte Schneeschauer 🌨',
+  86: 'Starke Schneeschauer 🌨',
+  95: 'Gewitter ⛈',
+  96: 'Gewitter mit leichtem Hagel ⛈',
+  99: 'Schweres Gewitter mit Hagel ⛈',
+};
+
+function wmoDescription(code: number): string {
+  return WMO_CODES[code] ?? `Unbekannt (Code ${code})`;
+}
+
+async function fetchWeatherText(): Promise<string> {
+  const url =
+    `https://api.open-meteo.com/v1/forecast` +
+    `?latitude=${weatherLat}&longitude=${weatherLon}` +
+    `&current=temperature_2m,apparent_temperature,weathercode,windspeed_10m,precipitation` +
+    `&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,weathercode` +
+    `&timezone=Europe%2FBerlin&forecast_days=1`;
+
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Open-Meteo Fehler: ${res.status}`);
+  const data: any = await res.json();
+
+  const cur = data.current;
+  const day = data.daily;
+
+  const condition  = wmoDescription(Number(cur.weathercode));
+  const tempNow    = Number(cur.temperature_2m).toFixed(1);
+  const feelsLike  = Number(cur.apparent_temperature).toFixed(1);
+  const wind       = Number(cur.windspeed_10m).toFixed(0);
+  const tMax       = Number(day.temperature_2m_max[0]).toFixed(1);
+  const tMin       = Number(day.temperature_2m_min[0]).toFixed(1);
+  const precipSum  = Number(day.precipitation_sum[0]).toFixed(1);
+
+  return (
+    `🌤 <b>Wetter Berlin-Zehlendorf</b>\n` +
+    `${condition}\n\n` +
+    `🌡 Aktuell: <b>${tempNow} °C</b> (gefühlt ${feelsLike} °C)\n` +
+    `📈 Tageshoch: ${tMax} °C  •  📉 Tief: ${tMin} °C\n` +
+    `💨 Wind: ${wind} km/h\n` +
+    `🌧 Niederschlag heute: ${precipSum} mm`
+  );
+}
+
+type AppLogger = { info: (msg: string) => void; error: (obj: object, msg: string) => void };
+
+async function startTelegramPolling(logger: AppLogger): Promise<void> {
+  if (!telegramBotToken) return;
+
+  let offset = 0;
+
+  async function poll(): Promise<void> {
+    try {
+      const url = `https://api.telegram.org/bot${telegramBotToken}/getUpdates?offset=${offset}&timeout=10`;
+      const res = await fetch(url);
+      if (!res.ok) {
+        logger.error({}, `Telegram getUpdates Fehler: ${res.status}`);
+        return;
+      }
+      const data: any = await res.json();
+      if (!data.ok || !Array.isArray(data.result)) return;
+
+      for (const update of data.result) {
+        offset = update.update_id + 1;
+        const message = update.message;
+        if (!message?.text) continue;
+
+        const text   = (message.text as string).toLowerCase().trim();
+        const chatId = message.chat.id as number;
+
+        if (text.includes('wetter') || text === '/wetter') {
+          try {
+            const weatherText = await fetchWeatherText();
+            await sendTelegramMessageToChat(chatId, weatherText);
+          } catch (err) {
+            logger.error({ err }, 'Fehler beim Abrufen der Wetterdaten');
+            await sendTelegramMessageToChat(
+              chatId,
+              '❌ Wetterdaten konnten gerade nicht abgerufen werden.',
+            ).catch(() => {});
+          }
+        }
+      }
+    } catch (err) {
+      logger.error({ err }, 'Fehler beim Telegram-Polling');
+    } finally {
+      setTimeout(poll, 2000);
+    }
+  }
+
+  poll();
+  logger.info('Telegram-Polling gestartet (antwortet auf "Wetter" / /wetter)');
+}
+
+async function checkAndNotifyMeterReading(logger: AppLogger): Promise<void> {
   if (!telegramBotToken || !telegramChatId) return;
 
   const today = new Date();
@@ -102,7 +225,7 @@ async function checkAndNotifyMeterReading(logger: { info: (msg: string) => void;
   }
 }
 
-async function checkAndNotifyTomorrowPickups(logger: { info: (msg: string) => void; error: (obj: object, msg: string) => void }): Promise<void> {
+async function checkAndNotifyTomorrowPickups(logger: AppLogger): Promise<void> {
   if (!telegramBotToken || !telegramChatId) return;
 
   const tomorrow = new Date();
@@ -431,6 +554,13 @@ async function start() {
     await app.listen({ port: PORT, host: '0.0.0.0' });
     console.log(`Server läuft auf Port ${PORT}`);
 
+    // Täglich um 07:00 Uhr: Wetterbericht senden
+    scheduleDailyAt(7, 0, () => {
+      fetchWeatherText()
+        .then(text => sendTelegramMessage(text))
+        .catch(err => app.log.error({ err }, 'Fehler beim täglichen Wetterbericht'));
+    });
+
     // Täglich um 18:00 Uhr prüfen ob morgen ein Müllabholtermin ansteht
     scheduleDailyAt(18, 0, () => {
       checkAndNotifyTomorrowPickups(app.log).catch(err =>
@@ -446,8 +576,11 @@ async function start() {
     });
 
     if (telegramBotToken && telegramChatId) {
-      app.log.info('Telegram-Benachrichtigungen aktiviert (Müll 18:00, Zähler 08:00 am 1. des Monats)');
+      app.log.info('Telegram-Benachrichtigungen aktiviert (Wetter 07:00, Müll 18:00, Zähler 08:00 am 1. des Monats)');
     }
+
+    // Telegram-Polling starten (antwortet auf Wetter-Anfragen)
+    startTelegramPolling(app.log);
   } catch (err) {
     app.log.error(err);
     process.exit(1);
